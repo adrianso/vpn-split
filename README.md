@@ -1,8 +1,24 @@
 # vpn-split
 
-Client-side split tunneling for AWS Client VPN. macOS only.
+Poor-man's split tunneling for AWS Client VPN. macOS only.
 
-## Problem
+## Install
+
+```
+git clone https://github.com/adrianso/vpn-split.git
+cd vpn-split
+./install.sh
+```
+
+You'll be prompted for the hostname to route through the VPN. Re-run `./install.sh` to change it.
+
+## Uninstall
+
+```
+./uninstall.sh
+```
+
+## Why?
 
 AWS Client VPN with SAML auth forces all traffic through the VPN tunnel (full tunnel). The server-side split tunnel setting is disabled and we can't change it. The AWS VPN Client strips custom OpenVPN directives like `pull-filter`, so there's no client-side config fix either.
 
@@ -19,27 +35,6 @@ OpenVPN implements full tunnel by pushing two catch-all routes (`0/1` and `128.0
 5. Monitors for VPN disconnect/reconnect and re-applies as needed
 
 The original default gateway is never touched, so all other traffic flows normally.
-
-## Install
-
-```
-./install.sh
-```
-
-You'll be prompted for the hostname to route through the VPN. This is saved to `~/.config/vpn-split/config`.
-
-The installer will:
-- Copy `vpn-split` to `~/.local/bin/`
-- Install a launchd agent that runs `vpn-split watch` on login
-- Create a sudoers entry for passwordless `route` commands (prompts for sudo once)
-
-Re-run `./install.sh` to change the hostname.
-
-## Uninstall
-
-```
-./uninstall.sh
-```
 
 ## Configuration
 
