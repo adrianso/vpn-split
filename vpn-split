@@ -1,0 +1,130 @@
+#!/bin/bash
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.config/vpn-split/config"
+POLL_INTERVAL=2
+TARGET_HOST=""
+TARGET_IPS=()
+VPN_IF=""
+VPN_GW=""
+FIXED=false
+
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    TARGET_HOST=$(grep -E '^HOST=' "$CONFIG_FILE" | cut -d= -f2-)
+  fi
+  TARGET_HOST="${VPN_SPLIT_HOST:-$TARGET_HOST}"
+  if [[ -z "$TARGET_HOST" ]]; then
+    echo "ERROR: no host configured. Run install.sh or set VPN_SPLIT_HOST."
+    exit 1
+  fi
+}
+
+log() {
+  if [[ -t 1 ]]; then
+    echo "$*"
+  else
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*"
+  fi
+}
+
+resolve_host() {
+  TARGET_IPS=()
+  while IFS= read -r ip; do
+    TARGET_IPS+=("$ip")
+  done < <(dig +short "$TARGET_HOST" | grep -E '^[0-9]+\.')
+  if [[ ${#TARGET_IPS[@]} -eq 0 ]]; then
+    log "ERROR: could not resolve $TARGET_HOST"
+    return 1
+  fi
+}
+
+vpn_interface_up() {
+  [[ -n "$VPN_IF" ]] && ifconfig "$VPN_IF" 2>/dev/null | grep -q "UP"
+}
+
+find_vpn() {
+  local info
+  info=$(netstat -rn 2>/dev/null | awk '/^0\/1[[:space:]]/ {print $2, $NF}')
+  if [[ -n "$info" ]]; then
+    VPN_GW=$(echo "$info" | awk '{print $1}')
+    VPN_IF=$(echo "$info" | awk '{print $2}')
+    return 0
+  fi
+  return 1
+}
+
+fix_routes() {
+  resolve_host || return 1
+
+  log "VPN interface: $VPN_IF"
+  log "VPN gateway:   $VPN_GW"
+  log "Target IPs:    ${TARGET_IPS[*]}"
+
+  sudo route delete 0/1 "$VPN_GW" 2>/dev/null || true
+  sudo route delete 128.0/1 "$VPN_GW" 2>/dev/null || true
+
+  for ip in "${TARGET_IPS[@]}"; do
+    sudo route add "$ip/32" "$VPN_GW" 2>/dev/null || \
+      sudo route change "$ip/32" "$VPN_GW" 2>/dev/null || true
+  done
+
+  log "Routes fixed. $TARGET_HOST through VPN, everything else direct."
+  FIXED=true
+}
+
+cleanup() {
+  for ip in "${TARGET_IPS[@]}"; do
+    sudo route delete "$ip/32" 2>&1 | grep -v "not in table" || true
+  done
+  FIXED=false
+}
+
+trap cleanup EXIT
+
+cmd_fix() {
+  if ! find_vpn; then
+    log "ERROR: no VPN detected (no 0/1 route found) — connect to VPN first"
+    exit 1
+  fi
+  fix_routes
+}
+
+cmd_watch() {
+  log "Watching for VPN connection (target: $TARGET_HOST)..."
+
+  while true; do
+    if ! $FIXED && find_vpn; then
+      log "VPN detected on $VPN_IF (gw $VPN_GW)"
+      sleep 1
+      fix_routes || log "WARNING: route fix failed, will retry..."
+    elif $FIXED && ! vpn_interface_up; then
+      log "VPN disconnected ($VPN_IF is down)"
+      cleanup
+    elif $FIXED && find_vpn; then
+      log "VPN re-pushed routes, fixing again..."
+      fix_routes || log "WARNING: route fix failed, will retry..."
+    fi
+
+    sleep "$POLL_INTERVAL"
+  done
+}
+
+usage() {
+  echo "Usage: vpn-split <command>"
+  echo ""
+  echo "Commands:"
+  echo "  watch   Watch for VPN connection and auto-fix routes"
+  echo "  fix     One-shot: fix routes now (VPN must be connected)"
+  echo ""
+  echo "Config: $CONFIG_FILE"
+  echo "Override: set VPN_SPLIT_HOST env var"
+}
+
+load_config
+
+case "${1:-}" in
+  watch) cmd_watch ;;
+  fix)   cmd_fix ;;
+  *)     usage ;;
+esac
